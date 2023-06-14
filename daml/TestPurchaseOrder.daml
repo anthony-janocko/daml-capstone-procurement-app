@@ -1,0 +1,239 @@
+module TestPurchaseOrder where
+
+import Daml.Script
+import PurchaseOrder
+
+data TestParties = TestParties
+    with
+        supplier: Party
+        manufacturer: Party
+
+data TestEntities = TestEntities
+    with
+        supplierEntityCid: ContractId Entity
+        manufacturerEntityCid: ContractId Entity
+        msaTerms: MSATerms
+
+setupParties : Script TestParties
+setupParties = script do
+    supplier <- allocateParty "Supplier"
+    manufacturer <- allocateParty "Manufacturer"
+    let
+        tp = TestParties with ..
+    return tp
+
+setupEntities = script do
+    tp@TestParties{..} <- setupParties
+
+    supplierEntityCid <- submit supplier do
+        createCmd Entity with
+            owner = supplier
+            inventory = 1000.0
+            balance = 0.0
+            name = "Iron"
+            counterParty = manufacturer
+
+    manufacturerEntityCid <- submit manufacturer do
+        createCmd Entity with
+            owner = manufacturer
+            inventory = 0.0
+            balance = 1000.0
+            name = "Iron"
+            counterParty = supplier
+
+    let 
+        msaTerms = MSATerms with
+            pricePerGood= 5.0
+            name = "Iron"
+            date = None
+    let 
+        te = TestEntities with ..
+    return (tp, te)
+
+-- Additional Helper Function for Unhappy Path Test #3
+setupEntities2 = script do
+    tp@TestParties{..} <- setupParties
+
+    supplierEntityCid <- submit supplier do
+        createCmd Entity with
+            owner = supplier
+            inventory = 100.0
+            balance = 0.0
+            name = "Iron"
+            counterParty = manufacturer
+
+    manufacturerEntityCid <- submit manufacturer do
+        createCmd Entity with
+            owner = manufacturer
+            inventory = 0.0
+            balance = 10000.0
+            name = "Iron"
+            counterParty = supplier
+
+    let 
+        msaTerms = MSATerms with
+            pricePerGood= 5.0
+            name = "Iron"
+            date = None
+    let 
+        te = TestEntities with ..
+    return (tp, te)
+
+-- 1. Happy Path: Reject Proposal
+testMSAProposalReject= script do
+    (tp@TestParties{..}, ta@TestEntities{..}) <- setupEntities
+
+    msaProposalCid <- submit manufacturer do
+        createCmd MSAProposal with
+            msaTerms
+            supplier
+            manufacturer
+    
+    submit supplier do 
+        exerciseCmd msaProposalCid ProposeMSA_Reject
+
+    return ()
+
+-- 2. Happy Path: Cancel Proposal 
+testMSAProposalCancel= script do
+    (tp@TestParties{..}, ta@TestEntities{..}) <- setupEntities
+
+    msaProposalCid <- submit manufacturer do
+        createCmd MSAProposal with
+            msaTerms
+            supplier
+            manufacturer
+    
+    submit manufacturer do 
+        exerciseCmd msaProposalCid ProposeMSA_Cancel
+
+    return ()
+
+-- 3. Happy Path: Propose MSA, Accept Proposal
+testCreateMSA = script do
+    (tp@TestParties{..}, ta@TestEntities{..}) <- setupEntities
+
+    msaProposalCid <- submit manufacturer do
+        createCmd MSAProposal with
+            msaTerms
+            supplier
+            manufacturer
+    
+    submit supplier do 
+        exerciseCmd msaProposalCid ProposeMSA_Accept
+
+    return ()
+
+-- 4. Full Happy Path: Propose MSA, Accept Proposal, Create PO, Fulfill PO, Retire MSA
+testCreatePO = script do
+    (tp@TestParties{..}, ta@TestEntities{..}) <- setupEntities
+
+    msaProposalCid <- submit manufacturer do
+        createCmd MSAProposal with
+            msaTerms
+            supplier
+            manufacturer
+    
+    msaCid <- submit supplier do 
+        exerciseCmd msaProposalCid ProposeMSA_Accept
+
+    poCid <- submit manufacturer do 
+        exerciseCmd msaCid CreatePurchaseOrder with 
+            quantity = 10.0
+
+    submit supplier do
+        exerciseCmd poCid Fulfill
+
+    submit manufacturer do
+        exerciseCmd msaCid RetireMSA
+
+    return ()
+
+
+-- 1. Unhappy Path: Inactive MSA
+
+testCreatePOInactiveMSA : Script ()
+testCreatePOInactiveMSA = script do
+    (tp@TestParties{..}, ta@TestEntities{..}) <- setupEntities
+
+    msaProposalCid <- submit manufacturer do
+        createCmd MSAProposal with
+            msaTerms
+            supplier
+            manufacturer
+    
+    msaCid <- submit supplier do 
+        exerciseCmd msaProposalCid ProposeMSA_Accept
+
+    submit manufacturer do
+        exerciseCmd msaCid RetireMSA
+
+    submitMustFail manufacturer do 
+        exerciseCmd msaCid CreatePurchaseOrder with 
+            quantity = 10.0
+
+    return ()
+
+-- 2. Unhappy Path: Insufficient Manufacturer Balance for PO Fulfillment
+testFulfillPOInsufficientBalance = script do
+    (tp@TestParties{..}, ta@TestEntities{..}) <- setupEntities
+
+    msaProposalCid <- submit manufacturer do
+        createCmd MSAProposal with
+            msaTerms
+            supplier
+            manufacturer
+    
+    msaCid <- submit supplier do 
+        exerciseCmd msaProposalCid ProposeMSA_Accept
+
+    poCid <- submit manufacturer do 
+        exerciseCmd msaCid CreatePurchaseOrder with 
+            quantity = 200.0
+
+    submitMustFail supplier do
+        exerciseCmd poCid Fulfill
+
+    return ()
+
+-- 3. Unhappy Path: Insufficient Supplier Inventory for PO Fulfillment
+testFulfillPOInsufficientInventory = script do
+    (tp@TestParties{..}, ta@TestEntities{..}) <- setupEntities2
+
+    msaProposalCid <- submit manufacturer do
+        createCmd MSAProposal with
+            msaTerms
+            supplier
+            manufacturer
+    
+    msaCid <- submit supplier do 
+        exerciseCmd msaProposalCid ProposeMSA_Accept
+
+    poCid <- submit manufacturer do 
+        exerciseCmd msaCid CreatePurchaseOrder with 
+            quantity = 200.0
+
+    submitMustFail supplier do
+        exerciseCmd poCid Fulfill
+
+    return ()
+
+-- 5. Happy Path: Iterative PO Creation Test 
+
+testCreatePOs = script do
+    (tp@TestParties{..}, ta@TestEntities{..}) <- setupEntities2
+
+    msaProposalCid <- submit manufacturer do
+        createCmd MSAProposal with
+            msaTerms
+            supplier
+            manufacturer
+    
+    msaCid <- submit supplier do 
+        exerciseCmd msaProposalCid ProposeMSA_Accept
+
+    submit manufacturer do 
+        exerciseCmd msaCid CreatePurchaseOrders with 
+            quantities = [10.0, 5.0, 2.0]
+
+    return ()

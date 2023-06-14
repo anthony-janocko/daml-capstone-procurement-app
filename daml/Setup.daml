@@ -1,0 +1,58 @@
+module Setup where
+import PurchaseOrder
+import Daml.Script
+
+
+data TestParties = TestParties
+    with
+        supplier: Party
+        manufacturer: Party
+
+setupParties : Script TestParties
+setupParties = script do
+    alice <- allocatePartyWithHint "Manufacturer" (PartyIdHint "Manufacturer")
+    bob <- allocatePartyWithHint "Supplier" (PartyIdHint "Supplier")
+    let 
+        tp = TestParties with
+            supplier = bob
+            manufacturer = alice
+    return tp
+
+
+
+setupEntities = script do
+    tp@TestParties{..} <- setupParties
+    alice <- validateUserId "Manufacturer"
+    bob <- validateUserId "Supplier"
+    createUser (User alice (Some manufacturer)) [CanActAs manufacturer]  
+    createUser (User bob (Some supplier)) [CanActAs supplier]
+    supplierEntityCid <- submit supplier do
+        createCmd Entity with
+            owner = supplier
+            inventory = 1000.0
+            balance = 0.0
+            name = "Iron"
+            counterParty = manufacturer
+
+    manufacturerEntityCid <- submit manufacturer do
+        createCmd Entity with
+            owner = manufacturer
+            inventory = 0.0
+            balance = 1000.0
+            name = "Iron"
+            counterParty = supplier
+
+    let 
+        msaTerms = MSATerms with
+            pricePerGood= 5.0
+            name = "Iron"
+            date = None
+
+    return ()
+
+
+
+
+
+
+

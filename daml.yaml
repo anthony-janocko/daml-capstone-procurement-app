@@ -1,0 +1,9 @@
+sdk-version: 2.6.4
+name: procurement-app
+source: daml
+version: 0.0.1
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script
+init-script: Setup:setupEntities

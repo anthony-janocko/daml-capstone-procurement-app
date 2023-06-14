@@ -1,0 +1,137 @@
+module PurchaseOrder where
+
+
+data MSATerms = MSATerms
+    with
+        pricePerGood: Decimal
+        name: Text
+        date: Optional Date
+    deriving (Eq, Show)
+
+template Entity 
+    with
+        owner: Party
+        inventory: Decimal
+        balance: Decimal
+        name: Text
+        counterParty: Party
+    where
+        signatory owner
+        observer counterParty
+        key (owner, name):(Party, Text)
+        maintainer key._1
+        
+        nonconsuming choice ProposeMSA: ContractId MSAProposal
+            with 
+                msaTerms: MSATerms
+                counterParty: Party
+            controller owner
+            do
+                create MSAProposal with
+                    msaTerms = msaTerms
+                    supplier = counterParty
+                    manufacturer = owner
+
+
+template MSA
+    with
+        msaTerms: MSATerms
+        isActive: Bool
+        supplier: Party
+        manufacturer: Party
+    where
+        signatory supplier, manufacturer
+
+        nonconsuming choice CreatePurchaseOrder: ContractId PurchaseOrder
+            with 
+                quantity: Decimal
+            controller manufacturer
+            do
+                create PurchaseOrder with
+                    msa = this
+                    quantity
+                    name = msaTerms.name
+
+        nonconsuming choice CreatePurchaseOrders: [ContractId PurchaseOrder]
+            with 
+                quantities: [Decimal]
+            controller manufacturer
+            do
+                forA quantities (\quantity -> create PurchaseOrder with
+                    msa = this
+                    quantity
+                    name = msaTerms.name)
+                
+        
+        nonconsuming choice RetireMSA: ContractId MSA
+            controller manufacturer
+            do 
+                archive self
+                create this with
+                    isActive = False
+
+
+
+
+
+template MSAProposal
+    with
+        msaTerms: MSATerms
+        supplier: Party
+        manufacturer: Party
+    where
+        signatory manufacturer
+        observer supplier
+
+        choice ProposeMSA_Accept: ContractId MSA
+            controller supplier
+            do
+                create MSA with
+                    msaTerms
+                    isActive = True
+                    supplier
+                    manufacturer
+        
+        choice ProposeMSA_Reject: ()
+            controller supplier
+            do
+                return ()
+
+        choice ProposeMSA_Cancel: ()
+            controller manufacturer
+            do
+                return ()
+
+template PurchaseOrder
+    with
+        msa: MSA
+        quantity: Decimal
+        name: Text
+    where
+        signatory msa.manufacturer
+        observer msa.supplier
+        ensure msa.isActive
+
+        choice Fulfill: ()
+            controller msa.supplier
+            do
+                (supplierCid, supplierPayload) <- fetchByKey @Entity (msa.supplier, name)
+                (manufacturerCid, manufacturerPayload) <- fetchByKey @Entity (msa.manufacturer, name)
+
+                let 
+                    cost = msa.msaTerms.pricePerGood * quantity
+                assertMsg "Insufficent manufacturer balance to complete PO" $ cost < manufacturerPayload.balance
+                assertMsg "Insufficent supplier quantity to complete PO" $ quantity < supplierPayload.inventory 
+
+                archive supplierCid
+                archive manufacturerCid
+
+                create supplierPayload with
+                    balance = supplierPayload.balance + cost
+                    inventory = supplierPayload.inventory - quantity
+
+                create manufacturerPayload with
+                    balance = manufacturerPayload.balance - cost
+                    inventory = manufacturerPayload.inventory + quantity
+                
+                return ()
